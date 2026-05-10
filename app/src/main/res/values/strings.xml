@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FireWhale AI</string>
+    <string name="accessibility_service_description">Adds scan circle overlay and checks on-screen claims for misinformation, phishing, and harmful links.</string>
+</resources>
