@@ -44,6 +44,8 @@ class ScreenScanAccessibilityService : AccessibilityService() {
     private var windowManager: WindowManager? = null
     private var scanButton: TextView? = null
     private var warningBanner: TextView? = null
+    private var bannerDismissRunnable: Runnable? = null
+    private var isScanning = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -64,6 +66,7 @@ class ScreenScanAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        bannerDismissRunnable?.let { mainHandler.removeCallbacks(it) }
         removeOverlay()
     }
 
@@ -72,17 +75,17 @@ class ScreenScanAccessibilityService : AccessibilityService() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         val circle = TextView(this).apply {
-            text = "Scan"
+            text = "🔍"
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
-            textSize = 14f
+            textSize = 18f
             setPadding(24, 24, 24, 24)
             isClickable = true
             isFocusable = true
             setOnClickListener { triggerScan() }
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xCC1E88E5.toInt())
+                setColor(0xCC1565C0.toInt())
                 setStroke(3, 0xFFFFFFFF.toInt())
             }
         }
@@ -112,6 +115,7 @@ class ScreenScanAccessibilityService : AccessibilityService() {
     }
 
     private fun triggerScan() {
+        if (isScanning) return
         if (GEMINI_API_KEY.isBlank()) {
             showToast("Gemini API key missing. Set GEMINI_API_KEY in local.properties.")
             return
@@ -131,21 +135,33 @@ class ScreenScanAccessibilityService : AccessibilityService() {
             return
         }
 
+        isScanning = true
+        mainHandler.post {
+            scanButton?.text = "⏳"
+            (scanButton?.background as? GradientDrawable)?.setColor(0xCC455A64.toInt())
+        }
+
         serviceScope.launch {
             try {
                 val screenshotBase64 = captureScreenshotBase64()
                 val verdict = GeminiVerifier.verify(scanText, screenshotBase64, GEMINI_API_KEY)
                 mainHandler.post {
                     when (verdict.riskLevel.lowercase(Locale.ROOT)) {
-                        "high", "critical" -> showWarningBanner("Risk: ${verdict.riskLevel}. ${verdict.summary}")
-                        "low", "medium" -> showWarningBanner("Safe: ${verdict.summary}")
-                        else -> showWarningBanner("Caution: ${verdict.summary}")
+                        "high", "critical" -> showWarningBanner("⚠️ Risk: ${verdict.riskLevel}. ${verdict.summary}")
+                        "low", "medium" -> showWarningBanner("✅ Safe: ${verdict.summary}")
+                        else -> showWarningBanner("ℹ️ Caution: ${verdict.summary}")
                     }
                     showToast("Scan complete: ${verdict.riskLevel}")
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "Scan failed", t)
                 showToast("Scan failed: ${t.message ?: "unknown error"}")
+            } finally {
+                isScanning = false
+                mainHandler.post {
+                    scanButton?.text = "🔍"
+                    (scanButton?.background as? GradientDrawable)?.setColor(0xCC1565C0.toInt())
+                }
             }
         }
     }
@@ -221,11 +237,16 @@ class ScreenScanAccessibilityService : AccessibilityService() {
 
     private fun showWarningBanner(message: String) {
         val wm = windowManager ?: return
+        val isRisk = message.startsWith("⚠️")
+        val bannerColor = when {
+            isRisk -> 0xCCB71C1C.toInt()
+            message.startsWith("✅") -> 0xCC2E7D32.toInt()
+            else -> 0xCC795548.toInt()
+        }
         if (warningBanner == null) {
             warningBanner = TextView(this).apply {
                 setPadding(24, 18, 24, 18)
                 setTextColor(0xFFFFFFFF.toInt())
-                setBackgroundColor(0xCCB71C1C.toInt())
                 textSize = 14f
             }
             val params = WindowManager.LayoutParams(
@@ -239,7 +260,19 @@ class ScreenScanAccessibilityService : AccessibilityService() {
             runCatching { wm.addView(warningBanner, params) }
                 .onFailure { Log.w(TAG, "Unable to attach warning banner", it) }
         }
+        warningBanner?.setBackgroundColor(bannerColor)
         warningBanner?.text = message
+
+        // Auto-dismiss after 8 seconds
+        bannerDismissRunnable?.let { mainHandler.removeCallbacks(it) }
+        val dismissRunnable = Runnable {
+            warningBanner?.let {
+                runCatching { wm.removeView(it) }
+                warningBanner = null
+            }
+        }
+        bannerDismissRunnable = dismissRunnable
+        mainHandler.postDelayed(dismissRunnable, 8_000)
     }
 
     private fun showToast(message: String) {
